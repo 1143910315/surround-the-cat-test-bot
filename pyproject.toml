@@ -7,7 +7,9 @@ requires-python = ">=3.8, <4.0"
 
 [tool.nonebot]
 adapters = [
-    { name = "Console", module_name = "nonebot.adapters.console" }
+    { name = "Console", module_name = "nonebot.adapters.console" },
+    { name = "OneBot V11", module_name = "nonebot.adapters.onebot.v11" },
+    { name = "QQ", module_name = "nonebot.adapters.qq" }
 ]
 plugins = []
 plugin_dirs = ["surround_the_cat_test_bot/plugins"]
