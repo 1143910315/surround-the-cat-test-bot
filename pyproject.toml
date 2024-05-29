@@ -1,0 +1,14 @@
+[project]
+name = "surround-the-cat-test-bot"
+version = "0.1.0"
+description = "surround-the-cat-test-bot"
+readme = "README.md"
+requires-python = ">=3.8, <4.0"
+
+[tool.nonebot]
+adapters = [
+    { name = "Console", module_name = "nonebot.adapters.console" }
+]
+plugins = []
+plugin_dirs = ["surround_the_cat_test_bot/plugins"]
+builtin_plugins = []
