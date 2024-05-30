@@ -2,7 +2,9 @@ from nonebot import get_plugin_config
 from nonebot import on_command
 from nonebot import logger
 from nonebot import get_driver
+from nonebot import on_regex
 from nonebot.adapters import Bot
+from nonebot.adapters import Event
 from nonebot.adapters import Message
 from nonebot.adapters.console import Bot as ConsoleBot
 from nonebot.adapters.console import MessageSegment as ConsoleMessageSegment
@@ -89,11 +91,12 @@ def downloadImage(url):
             while len(updatePictureList) <= 0:
                 # 如果缓存图片列表已满，则等待消费者消费一个数据
                 condition.wait()
-            localPath = f"{config.imageCacheDirectory}/{updatePictureList.pop()}"
+            fileName = updatePictureList.pop()
+            localPath = f"{config.imageCacheDirectory}/{fileName}"
             # 将图片数据写入本地文件
             with open(localPath, "wb") as file:
                 file.write(response.content)
-            cachePictureList.add(localPath)
+            cachePictureList.add(fileName)
             logger.debug(f"图片下载成功，已保存到 {localPath}")
 
 
@@ -320,9 +323,10 @@ def initGame():
     }
 
 
-def drawGameData(gameData):
+def drawGameData(gameData, userImage):
     map = gameData["map"]
     catList = gameData["catList"]
+    playerList = gameData["playerList"]
     # 创建一个 300x300 的白色图片
     image = Image.new("RGB", (500, 418), (179, 217, 254))
 
@@ -368,6 +372,29 @@ def drawGameData(gameData):
         mask_draw = ImageDraw.Draw(mask)
         mask_draw.ellipse((0, 0, newWidth, newHeight), fill=255)
         image.paste(processed_image, (indexToX, indexToY), mask=mask)
+    for positionIndex in playerList:
+        position = indexToIJ(positionIndex)
+        imagePath = userImage
+        indexToI = position[0]
+        indexToJ = position[1]
+        # 绘制图片
+        # draw.bitmap((0, 0), resizeAndMaskImage(headImagePath,50,50))
+        newWidth = r * 2 - 4
+        newHeight = r * 2 - 4
+        processed_image = resizeImage(imagePath, newWidth, newHeight)
+
+        # 创建一个与缩放后图片大小相同的黑色背景
+        mask = Image.new("L", (newWidth, newHeight), 0)
+
+        indexToX = (r * 2 + 2) * indexToI + 2 - r * 2 + 2
+        indexToY = (r * 2 - 5) * indexToJ + 9 - r * 2 + 2
+        if indexToJ % 2 == 0:
+            indexToX = indexToX + r
+        # 在黑色背景上绘制一个白色的圆形，作为遮罩
+        mask_draw = ImageDraw.Draw(mask)
+        mask_draw.ellipse((0, 0, newWidth, newHeight), fill=255)
+        image.paste(processed_image, (indexToX, indexToY), mask=mask)
+
     # 绘制一个黑色圆形
     # draw.ellipse((50, 50, 250, 250))
 
@@ -375,10 +402,60 @@ def drawGameData(gameData):
     image.save(f"{config.imageCacheDirectory}/game_image.png")
 
 
+def placingPieces(index, userId):
+    gameData = playerGameDataMap[userId]
+    catList = gameData["catList"]
+    playerList = gameData["playerList"]
+    map = gameData["map"]
+    positonIJ = indexToIJ(index)
+    i = positonIJ[0]
+    j = positonIJ[1]
+    if map[i][j]["status"] == 0:
+        for cat in catList:
+            if cat["i"] == i and cat["j"] == j:
+                return False
+        map[i][j]["status"] = 2
+        playerList.append(index)
+        return True
+    else:
+        return False
+
+def deleteFilesStartswith(directory, prefix):
+    # 列出目录中的所有文件
+    files = os.listdir(directory)
+    
+    # 删除以指定字符串开头的文件
+    for file in files:
+        if file.startswith(prefix):
+            os.remove(os.path.join(directory, file))
+
+def textToNumber(text):
+    try:
+        number = int(text)
+        return number
+    except ValueError:
+        return None
+
+
+def textInNumber(text, minNumber, maxNumber):
+    try:
+        return minNumber <= int(text) <= maxNumber
+    except ValueError:
+        return False
+
+
+async def userInGame(event: Event) -> bool:
+    return (
+        textInNumber(event.get_plaintext(), 1, 81)
+        and event.get_user_id() in playerGameDataMap
+    )
+
+
 downloadImageToDirectory(
     "https://marketplace.canva.cn/PX2nY/MAA9p7PX2nY/4/tl/canva-user--MAA9p7PX2nY.png",
     f"{config.imageCacheDirectory}/common_user.png",
 )
+deleteFilesStartswith(config.imageCacheDirectory, "in_game_")
 checkAndAddToCache()
 # 创建后台线程
 background_thread = threading.Thread(target=downloadPicture)
@@ -388,6 +465,7 @@ background_thread.start()
 drawPicture(f"{config.imageCacheDirectory}/common_user.png")
 
 surroundTheCat = on_command("围猫咪", priority=10)
+surroundStep = on_regex(r"\d\d?", rule=userInGame, priority=60)
 
 
 @driver.on_shutdown
@@ -399,10 +477,19 @@ async def shutdown():
 
 
 @surroundTheCat.handle()
-async def handle_function(state: T_State):
-    state["gameData"] = initGame()
+async def handle_function(event: Event, state: T_State):
+    gameData = initGame()
+    userId = event.get_user_id()
+    if userId in playerGameDataMap:
+        with condition:
+            recyclingGameData(playerGameDataMap.pop(userId))
+    playerGameDataMap[userId] = gameData
+    drawGameData(gameData, f"{config.imageCacheDirectory}/common_user.png")
+    await surroundTheCat.finish("游戏开始")
+
 
 # 通过依赖注入或事件处理函数来进行业务逻辑处理
+
 
 # 处理控制台回复
 @surroundTheCat.handle()
@@ -412,7 +499,7 @@ async def handle_console_reply(bot: ConsoleBot, state: T_State):
         with condition:
             recyclingGameData(playerGameDataMap.pop(key))
     playerGameDataMap[key] = state["gameData"]
-    drawGameData(state["gameData"])
+    drawGameData(state["gameData"], f"{config.imageCacheDirectory}/common_user.png")
     await surroundTheCat.finish("游戏开始")
 
 
@@ -443,10 +530,20 @@ async def handle_onebot_group_reply(
     await surroundTheCat.finish("游戏开始")
 
 
-# 兼容性处理
-@surroundTheCat.handle()
-async def handle_onebot_group_reply(bot, event, state: T_State):
-    recyclingGameData(state["gameData"])
+@surroundStep.handle()
+async def handleGameNextStep(event: Event, state: T_State):
+    placingPiecesNumber = textToNumber(event.get_plaintext())
+    userId = event.get_user_id()
+    if 1 <= placingPiecesNumber <= 81 and userId in playerGameDataMap:
+        result = placingPieces(placingPiecesNumber, userId)
+        drawGameData(
+            playerGameDataMap[userId], f"{config.imageCacheDirectory}/common_user.png"
+        )
+        if result:
+            await surroundStep.finish("下子完成")
+        else:
+            await surroundStep.finish("无效位置")
+    await surroundStep.finish("不在游戏中")
 
 
 # @surroundTheCat.handle()
