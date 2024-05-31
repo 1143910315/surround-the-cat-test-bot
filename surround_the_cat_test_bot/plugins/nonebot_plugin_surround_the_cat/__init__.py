@@ -21,6 +21,8 @@ import requests
 from datetime import datetime, timedelta
 import threading
 import os
+from collections import deque
+import networkx as nx
 import random
 import inspect
 import signal
@@ -44,6 +46,16 @@ playerGameDataMap = {}
 updatePictureList = set()
 # 条件变量，用于生产者等待消费者消费数据后开始执行
 condition = threading.Condition()
+exitList = []
+mapWidth = 9
+mapHeight = 9
+for i in range(1, mapWidth + 1):
+    exitList.append(i)
+    exitList.append(mapWidth * mapHeight - mapWidth + i)
+for j in range(2, mapHeight):
+    exitList.append(mapWidth * (j - 1) + 1)
+    exitList.append(mapWidth * j)
+
 
 os.makedirs(config.imageCacheDirectory, exist_ok=True)
 
@@ -212,8 +224,12 @@ def resizeImage(imagePath, newWidth, newHeight):
     return resultImage.resize(new_size)
 
 
-def indexToIJ(index):
+def fromIndexToIJ(index):
     return ((index - 1) % 9 + 1, (index - 1) // 9 + 1)
+
+
+def fromIJToIndex(i, j):
+    return i + (j - 1) * 9
 
 
 def drawPicture(headImagePath):
@@ -290,27 +306,39 @@ def initGame():
     for i in range(1, 10):
         map[i] = {}
         for j in range(1, 10):
+            map[i][j] = {"status": 0}
             serialNumber = i + (j - 1) * 9
-            if serialNumber not in [31, 32, 40, 41, 42, 49, 50]:
-                if random.random() < 0.0617:
-                    map[i][j] = {"status": 1}
-                else:
-                    map[i][j] = {"status": 0}
-            else:
-                map[i][j] = {"status": 0}
+            if serialNumber in [31, 32, 40, 41, 42, 49, 50]:
                 if len(catList) < 5:
                     if random.random() < 0.4:
                         catPicture = randomFile()
                         if bool(catPicture):
-                            createGameSuccess = False
-                            catList.append({"i": i, "j": j, "catPicture": catPicture})
+                            map[i][j]["status"] = 3
+                            catList.append(
+                                {
+                                    "i": i,
+                                    "j": j,
+                                    "catPicture": catPicture,
+                                    "algorithm": random.randint(1, 1),
+                                    "status": 0,
+                                }
+                            )
+            else:
+                if random.random() < 0.12:
+                    map[i][j]["status"] = 1
     if len(catList) == 0:
         firstSerialNumber = random.choice([31, 32, 40, 41, 42, 49, 50])
-        positonIJ = indexToIJ(firstSerialNumber)
+        positonIJ = fromIndexToIJ(firstSerialNumber)
         catPicture = randomFile()
         if bool(catPicture):
             catList.append(
-                {"i": positonIJ[0], "j": positonIJ[1], "catPicture": catPicture}
+                {
+                    "i": positonIJ[0],
+                    "j": positonIJ[1],
+                    "catPicture": catPicture,
+                    "algorithm": random.randint(1, 1),
+                    "status": 0,
+                }
             )
         else:
             createGameSuccess = False
@@ -321,6 +349,69 @@ def initGame():
         "lastUpdateTime": datetime.now(),
         "createGameSuccess": createGameSuccess,
     }
+
+
+def createGraphFromGamedata(gameData):
+    # 使用 NetworkX 创建图形结构
+    graph = nx.Graph()
+    map = gameData["map"]
+    for index in range(1, 82):
+        i, j = fromIndexToIJ(index)
+        if map[i][j]["status"] == 0:
+            if i + 1 < 10 and map[i + 1][j]["status"] == 0:
+                newIndex = fromIJToIndex(i + 1, j)
+                graph.add_edge(index, newIndex)
+            if j % 2 == 0:
+                if i + 1 < 10 and j + 1 < 10 and map[i + 1][j + 1]["status"] == 0:
+                    newIndex = fromIJToIndex(i + 1, j + 1)
+                    graph.add_edge(index, newIndex)
+            else:
+                if i - 1 > 0 and j + 1 < 10 and map[i - 1][j + 1]["status"] == 0:
+                    newIndex = fromIJToIndex(i - 1, j + 1)
+                    graph.add_edge(index, newIndex)
+            if j + 1 < 10 and map[i][j + 1]["status"] == 0:
+                newIndex = fromIJToIndex(i, j + 1)
+                graph.add_edge(index, newIndex)
+    return graph
+
+
+def bfsShortestPath(gameData, startNode):
+    # 使用广度优先搜索算法找到从起点到所有出口的最短路径
+    shortestPaths = nx.shortest_path(
+        createGraphFromGamedata(gameData), source=startNode
+    )
+    shortestPaths = {
+        key: value for key, value in shortestPaths.items() if key in exitList
+    }
+    if len(shortestPaths) == 0:
+        return []
+    # 找到最短路径中最短的那条路径
+    shortest_exit = min(shortestPaths, key=lambda x: len(shortestPaths[x]))
+
+    return shortestPaths[shortest_exit]
+
+
+def moveAllCat(gameData):
+    map = gameData["map"]
+    catList = gameData["catList"]
+    for cat in catList:
+        if cat["status"] == 0:
+            catI = cat["i"]
+            catJ = cat["j"]
+            map[catI][catJ]["status"] = 0
+            catAlgorithm = cat["algorithm"]
+            if catAlgorithm == 1:
+                path = bfsShortestPath(gameData, fromIJToIndex(catI, catJ))
+                if len(path) > 1:
+                    i, j = fromIndexToIJ(path[1])
+                    cat["i"] = i
+                    cat["j"] = j
+                    if path[1] in exitList:
+                        cat["status"] = -1
+                    else:
+                        map[i][j]["status"] = 3
+                else:
+                    cat["status"] = 1
 
 
 def drawGameData(gameData, userImage):
@@ -340,9 +431,7 @@ def drawGameData(gameData, userImage):
             y = (r * 2 - 5) * j + 9 - r
             if j % 2 == 0:
                 x = x + r
-            if map[i][j]["status"] == 1:
-                draw.ellipse((x - r, y - r, x + r, y + r), fill="black", width=3)
-            else:
+            if map[i][j]["status"] == 0:
                 textX = x - r + 5
                 textY = y - r + 4
                 if j == 1:
@@ -350,30 +439,33 @@ def drawGameData(gameData, userImage):
                 # 使用默认字体写文本
                 draw.text((textX, textY), f"{i+(j-1)*9}", fill="black", font_size=35)
                 draw.ellipse((x - r, y - r, x + r, y + r), outline="black", width=3)
+            elif map[i][j]["status"] == 1:
+                draw.ellipse((x - r, y - r, x + r, y + r), fill="black", width=3)
 
     for cat in catList:
-        imagePath = cat["catPicture"]
-        indexToI = cat["i"]
-        indexToJ = cat["j"]
-        # 绘制图片
-        # draw.bitmap((0, 0), resizeAndMaskImage(headImagePath,50,50))
-        newWidth = r * 2 - 4
-        newHeight = r * 2 - 4
-        processed_image = resizeImage(imagePath, newWidth, newHeight)
+        if cat["status"] == 0:
+            imagePath = cat["catPicture"]
+            indexToI = cat["i"]
+            indexToJ = cat["j"]
+            # 绘制图片
+            # draw.bitmap((0, 0), resizeAndMaskImage(headImagePath,50,50))
+            newWidth = r * 2 - 4
+            newHeight = r * 2 - 4
+            processed_image = resizeImage(imagePath, newWidth, newHeight)
 
-        # 创建一个与缩放后图片大小相同的黑色背景
-        mask = Image.new("L", (newWidth, newHeight), 0)
+            # 创建一个与缩放后图片大小相同的黑色背景
+            mask = Image.new("L", (newWidth, newHeight), 0)
 
-        indexToX = (r * 2 + 2) * indexToI + 2 - r * 2 + 2
-        indexToY = (r * 2 - 5) * indexToJ + 9 - r * 2 + 2
-        if indexToJ % 2 == 0:
-            indexToX = indexToX + r
-        # 在黑色背景上绘制一个白色的圆形，作为遮罩
-        mask_draw = ImageDraw.Draw(mask)
-        mask_draw.ellipse((0, 0, newWidth, newHeight), fill=255)
-        image.paste(processed_image, (indexToX, indexToY), mask=mask)
+            indexToX = (r * 2 + 2) * indexToI + 2 - r * 2 + 2
+            indexToY = (r * 2 - 5) * indexToJ + 9 - r * 2 + 2
+            if indexToJ % 2 == 0:
+                indexToX = indexToX + r
+            # 在黑色背景上绘制一个白色的圆形，作为遮罩
+            mask_draw = ImageDraw.Draw(mask)
+            mask_draw.ellipse((0, 0, newWidth, newHeight), fill=255)
+            image.paste(processed_image, (indexToX, indexToY), mask=mask)
     for positionIndex in playerList:
-        position = indexToIJ(positionIndex)
+        position = fromIndexToIJ(positionIndex)
         imagePath = userImage
         indexToI = position[0]
         indexToJ = position[1]
@@ -404,30 +496,28 @@ def drawGameData(gameData, userImage):
 
 def placingPieces(index, userId):
     gameData = playerGameDataMap[userId]
-    catList = gameData["catList"]
     playerList = gameData["playerList"]
     map = gameData["map"]
-    positonIJ = indexToIJ(index)
+    positonIJ = fromIndexToIJ(index)
     i = positonIJ[0]
     j = positonIJ[1]
     if map[i][j]["status"] == 0:
-        for cat in catList:
-            if cat["i"] == i and cat["j"] == j:
-                return False
         map[i][j]["status"] = 2
         playerList.append(index)
         return True
     else:
         return False
 
+
 def deleteFilesStartswith(directory, prefix):
     # 列出目录中的所有文件
     files = os.listdir(directory)
-    
+
     # 删除以指定字符串开头的文件
     for file in files:
         if file.startswith(prefix):
             os.remove(os.path.join(directory, file))
+
 
 def textToNumber(text):
     try:
@@ -536,6 +626,8 @@ async def handleGameNextStep(event: Event, state: T_State):
     userId = event.get_user_id()
     if 1 <= placingPiecesNumber <= 81 and userId in playerGameDataMap:
         result = placingPieces(placingPiecesNumber, userId)
+        if result:
+            moveAllCat(playerGameDataMap[userId])
         drawGameData(
             playerGameDataMap[userId], f"{config.imageCacheDirectory}/common_user.png"
         )
