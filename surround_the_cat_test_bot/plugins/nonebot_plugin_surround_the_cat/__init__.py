@@ -21,6 +21,9 @@ import requests
 from datetime import datetime, timedelta
 import threading
 import os
+import urllib.request
+import zipfile
+from tqdm import tqdm
 from collections import deque
 import networkx as nx
 import random
@@ -56,8 +59,102 @@ for j in range(2, mapHeight):
     exitList.append(mapWidth * (j - 1) + 1)
     exitList.append(mapWidth * j)
 
+fontPath = ""
 
 os.makedirs(config.imageCacheDirectory, exist_ok=True)
+
+
+# 递归搜索函数
+def searchFiles(directory, extension):
+    for root, dirs, files in os.walk(directory):
+        for file in files:
+            if file.endswith(extension):
+                return os.path.join(root, file)  # 如果找到一个文件就返回True
+    return ""  # 如果遍历完所有文件都没找到匹配的就返回False
+
+
+# 下载文件并显示下载进度和速度
+def downloadWithProgress(url, savePath):
+    logger.debug("开始下载...")
+    try:
+        ## 设置代理服务器地址和端口号
+        # proxyAddress = "127.0.0.1:8888"
+        #
+        ## 创建代理处理程序
+        # proxyHandler = urllib.request.ProxyHandler({'http': proxyAddress, 'https': proxyAddress})
+        #
+        ## 创建URL打开器（opener）
+        # opener = urllib.request.build_opener(proxyHandler)
+        #
+        ## 安装URL打开器为全局默认
+        # urllib.request.install_opener(opener)
+
+        # 创建一个Request对象，并设置自定义的HTTP头
+        req = urllib.request.Request(url)
+        req.add_header("User-Agent", "NoneBot/surroundTheCatTestBot")
+        with urllib.request.urlopen(req) as response, open(savePath, "wb") as outFile:
+            # 获取文件大小
+            file_size = int(response.info().get("Content-Length", -1))
+
+            # 初始化进度条
+            progressBar = tqdm(
+                total=file_size,
+                unit="B",
+                unit_scale=True,
+                desc=os.path.basename(savePath),
+                ncols=100,
+            )
+
+            # 下载文件并显示进度
+            downloaded = 0
+            blockSize = 1024 * 8
+            while True:
+                buffer = response.read(blockSize)
+                if not buffer:
+                    break
+                downloaded += len(buffer)
+                progressBar.update(len(buffer))
+                outFile.write(buffer)
+
+            progressBar.close()
+            print("\n下载完成.")
+            return True
+    except Exception as e:
+        logger.error("异常:", e)
+    return False
+
+
+# 解压缩zip文件
+def extractZip(zip_file, extract_dir):
+    with zipfile.ZipFile(zip_file, "r") as zip_ref:
+        logger.debug("开始解压缩...")
+        zip_ref.extractall(extract_dir)
+        logger.debug("解压缩完成.")
+
+
+# 下载并解压缩zip文件
+def downloadAndExtract(url, savePath, extractDir):
+    if downloadWithProgress(url, savePath):
+        extractZip(savePath, extractDir)
+
+
+def checkFontExits():
+    global fontPath
+    if os.path.exists("C:/Windows/Fonts/msyh.ttc"):
+        fontPath = "C:/Windows/Fonts/msyh.ttc"
+    while fontPath == "":
+        fontPath = searchFiles(config.imageCacheDirectory, ".ttf")
+        if fontPath == "":
+            logger.info(
+                f"缺少字体文件，请将字体文件放在{config.imageCacheDirectory}目录下，后缀要求为.ttf"
+            )
+            # 得意黑字体
+            # https://github.com/atelier-anchor/smiley-sans
+            downloadAndExtract(
+                "https://atelier-anchor.com/downloads/smiley-sans-v2.0.1.zip",
+                f"{config.imageCacheDirectory}/archive.zip",
+                f"{config.imageCacheDirectory}",
+            )
 
 
 def checkAndAddToCache():
@@ -493,7 +590,7 @@ def drawGameData(gameData, userImage):
         mask_draw = ImageDraw.Draw(mask)
         mask_draw.ellipse((0, 0, newWidth, newHeight), fill=255)
         image.paste(processed_image, (indexToX, indexToY), mask=mask)
-    font = ImageFont.truetype("C:/Windows/Fonts/msyh.ttc", 15)
+    font = ImageFont.truetype(fontPath, 15)
     drawLeft = 15
     drawTop = gameMapImageHeight + 5
     lineheight = 20
@@ -676,6 +773,7 @@ async def userInGame(event: Event) -> bool:
     return textInNumber(message, 1, 81) and event.get_user_id() in playerGameDataMap
 
 
+checkFontExits()
 downloadImageToDirectory(
     "https://marketplace.canva.cn/PX2nY/MAA9p7PX2nY/4/tl/canva-user--MAA9p7PX2nY.png",
     f"{config.imageCacheDirectory}/common_user.png",
