@@ -26,7 +26,7 @@ import networkx as nx
 import random
 import inspect
 import signal
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 from .config import Config
 
 __plugin_meta__ = PluginMetadata(
@@ -302,6 +302,7 @@ def initGame():
     map = {}
     playerList = []
     catList = []
+    inventory = {"roadbreaker": 3, "felineLure": 3, "frostWall": 3}
     createGameSuccess = True
     for i in range(1, 10):
         map[i] = {}
@@ -346,6 +347,7 @@ def initGame():
         "map": map,
         "playerList": playerList,
         "catList": catList,
+        "inventory": inventory,
         "lastUpdateTime": datetime.now(),
         "createGameSuccess": createGameSuccess,
     }
@@ -418,8 +420,13 @@ def drawGameData(gameData, userImage):
     map = gameData["map"]
     catList = gameData["catList"]
     playerList = gameData["playerList"]
+    inventory = gameData["inventory"]
+    gameMapImageWidth = 500
+    gameMapImageHeight = 418
     # 创建一个 300x300 的白色图片
-    image = Image.new("RGB", (500, 418), (179, 217, 254))
+    image = Image.new(
+        "RGB", (gameMapImageWidth, gameMapImageHeight + 180), (179, 217, 254)
+    )
 
     # 创建绘图对象
     draw = ImageDraw.Draw(image)
@@ -486,12 +493,101 @@ def drawGameData(gameData, userImage):
         mask_draw = ImageDraw.Draw(mask)
         mask_draw.ellipse((0, 0, newWidth, newHeight), fill=255)
         image.paste(processed_image, (indexToX, indexToY), mask=mask)
-
+    font = ImageFont.truetype("C:/Windows/Fonts/msyh.ttc", 15)
+    drawLeft = 15
+    drawTop = gameMapImageHeight + 5
+    lineheight = 20
+    draw.text(
+        (drawLeft, drawTop),
+        f"围猫咪：猫咪无法到达边缘视为被抓住，猫咪到达边缘视为逃跑成功",
+        fill="black",
+        font=font,
+    )
+    drawTop = drawTop + lineheight
+    draw.text(
+        (drawLeft, drawTop),
+        f"　　　　以抓住所有猫咪为目标开始游戏吧",
+        fill="black",
+        font=font,
+    )
+    drawTop = drawTop + lineheight
+    draw.text(
+        (drawLeft, drawTop),
+        f"数　字：输入1-81增加障碍物",
+        fill="black",
+        font=font,
+    )
+    drawTop = drawTop + lineheight
+    draw.text(
+        (drawLeft, drawTop),
+        f"炸数字：将指定格以及周围的格子炸掉（剩余：{inventory['roadbreaker']}）",
+        fill="black",
+        font=font,
+    )
+    drawTop = drawTop + lineheight
+    draw.text(
+        (drawLeft, drawTop),
+        f"诱数字：只能指定猫咪周围的格子，在指定格放置猫条（剩余：{inventory['felineLure']}）",
+        fill="black",
+        font=font,
+    )
+    drawTop = drawTop + lineheight
+    draw.text(
+        (drawLeft, drawTop),
+        f"　　　　吸引所有猫咪向这里前进一格，猫条会立即被猫咪吃掉",
+        fill="black",
+        font=font,
+    )
+    drawTop = drawTop + lineheight
+    draw.text(
+        (drawLeft, drawTop),
+        f"冰数字：与间隔一格的障碍物相连，在间隔的一格里建立临时冰墙",
+        fill="black",
+        font=font,
+    )
+    drawTop = drawTop + lineheight
+    draw.text(
+        (drawLeft, drawTop),
+        f"　　　　冰墙在两回合后融化（剩余：{inventory['frostWall']}）",
+        fill="black",
+        font=font,
+    )
     # 绘制一个黑色圆形
     # draw.ellipse((50, 50, 250, 250))
 
     # 保存图片
     image.save(f"{config.imageCacheDirectory}/game_image.png")
+
+
+def aroundFromIJ(i, j):
+    aroundList = []
+    if j % 2 == 0:
+        if i - 1 > 0:
+            aroundList.append((i - 1, j))
+        if j - 1 > 0:
+            aroundList.append((i, j - 1))
+        if j + 1 <= mapHeight:
+            aroundList.append((i, j + 1))
+        if i + 1 <= mapWidth:
+            aroundList.append((i + 1, j))
+            if j - 1 > 0:
+                aroundList.append((i + 1, j - 1))
+            if j + 1 <= mapHeight:
+                aroundList.append((i + 1, j + 1))
+    else:
+        if i - 1 > 0:
+            aroundList.append((i - 1, j))
+            if j - 1 > 0:
+                aroundList.append((i - 1, j - 1))
+            if j + 1 <= mapHeight:
+                aroundList.append((i - 1, j + 1))
+        if i + 1 <= mapWidth:
+            aroundList.append((i + 1, j))
+        if j - 1 > 0:
+            aroundList.append((i, j - 1))
+        if j + 1 <= mapHeight:
+            aroundList.append((i, j + 1))
+    return aroundList
 
 
 def placingPieces(index, userId):
@@ -504,6 +600,41 @@ def placingPieces(index, userId):
     if map[i][j]["status"] == 0:
         map[i][j]["status"] = 2
         playerList.append(index)
+        return True
+    else:
+        return False
+
+
+def useRoadbreaker(index, userId):
+    gameData = playerGameDataMap[userId]
+    playerList = gameData["playerList"]
+    map = gameData["map"]
+    catList = gameData["catList"]
+    inventory = gameData["inventory"]
+    if inventory["roadbreaker"] == 0:
+        return False
+    inventory["roadbreaker"] = inventory["roadbreaker"] - 1
+    positonIJ = fromIndexToIJ(index)
+    i = positonIJ[0]
+    j = positonIJ[1]
+    if map[i][j]["status"] == 0:
+        map[i][j]["status"] = 2
+        playerList.append(index)
+        aroundList = aroundFromIJ(i, j)
+        for around in aroundList:
+            aroundI = around[0]
+            aroundJ = around[1]
+            if map[aroundI][aroundJ]["status"] == 0:
+                map[aroundI][aroundJ]["status"] = 2
+                playerList.append(fromIJToIndex(aroundI, aroundJ))
+            if map[aroundI][aroundJ]["status"] == 3:
+                for cat in catList:
+                    if cat["status"] == 0:
+                        if cat["i"] == aroundI and cat["j"] == aroundJ:
+                            cat["status"] = -2
+                            break
+                map[aroundI][aroundJ]["status"] = 2
+                playerList.append(fromIJToIndex(aroundI, aroundJ))
         return True
     else:
         return False
@@ -535,10 +666,14 @@ def textInNumber(text, minNumber, maxNumber):
 
 
 async def userInGame(event: Event) -> bool:
-    return (
-        textInNumber(event.get_plaintext(), 1, 81)
-        and event.get_user_id() in playerGameDataMap
-    )
+    message = event.get_plaintext()
+    if message.startswith("炸"):
+        message = message.replace("炸", "", 1)
+    elif message.startswith("诱"):
+        message = message.replace("诱", "", 1)
+    elif message.startswith("冰"):
+        message = message.replace("冰", "", 1)
+    return textInNumber(message, 1, 81) and event.get_user_id() in playerGameDataMap
 
 
 downloadImageToDirectory(
@@ -555,7 +690,10 @@ background_thread.start()
 drawPicture(f"{config.imageCacheDirectory}/common_user.png")
 
 surroundTheCat = on_command("围猫咪", priority=10)
-surroundStep = on_regex(r"\d\d?", rule=userInGame, priority=60)
+surroundStep = on_regex(r"^\d\d?$", rule=userInGame, priority=60)
+roadbreakerMatcher = on_regex(r"^炸\d\d?$", rule=userInGame, priority=60)
+felineLureMatcher = on_regex(r"^诱\d\d?$", rule=userInGame, priority=60)
+frostWallMatcher = on_regex(r"^冰\d\d?$", rule=userInGame, priority=60)
 
 
 @driver.on_shutdown
@@ -636,6 +774,26 @@ async def handleGameNextStep(event: Event, state: T_State):
         else:
             await surroundStep.finish("无效位置")
     await surroundStep.finish("不在游戏中")
+
+
+@roadbreakerMatcher.handle()
+async def handleUseRoadbreaker(event: Event, state: T_State):
+    message = event.get_plaintext()
+    message = message.replace("炸", "", 1)
+    placingPiecesNumber = textToNumber(message)
+    userId = event.get_user_id()
+    if 1 <= placingPiecesNumber <= 81 and userId in playerGameDataMap:
+        result = useRoadbreaker(placingPiecesNumber, userId)
+        if result:
+            moveAllCat(playerGameDataMap[userId])
+        drawGameData(
+            playerGameDataMap[userId], f"{config.imageCacheDirectory}/common_user.png"
+        )
+        if result:
+            await roadbreakerMatcher.finish("使用炸弹成功")
+        else:
+            await roadbreakerMatcher.finish("炸弹不足或无效位置")
+    await roadbreakerMatcher.finish("不在游戏中")
 
 
 # @surroundTheCat.handle()
