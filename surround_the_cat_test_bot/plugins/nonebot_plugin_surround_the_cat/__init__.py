@@ -117,7 +117,7 @@ def downloadWithProgress(url, savePath):
                 outFile.write(buffer)
 
             progressBar.close()
-            print("\n下载完成.")
+            logger.debug("下载完成.")
             return True
     except Exception as e:
         logger.error("异常:", e)
@@ -186,7 +186,10 @@ def downloadPicture():
         if response.status_code == 200:
             # 解析 JSON 数据
             json_data = response.json()
-            downloadImage(json_data["data"][0]["urls"]["original"])
+            try:
+                downloadImage(json_data["data"][0]["urls"]["original"])
+            except Exception as e:
+                pass
 
 
 def downloadImage(url):
@@ -474,6 +477,30 @@ def createGraphFromGamedata(gameData):
     return graph
 
 
+def distanceBetweenIndex(firstIndex, secondIndex):
+    if firstIndex < secondIndex:
+        topI, topJ = fromIndexToIJ(firstIndex)
+        bottomI, bottomJ = fromIndexToIJ(secondIndex)
+    else:
+        topI, topJ = fromIndexToIJ(secondIndex)
+        bottomI, bottomJ = fromIndexToIJ(firstIndex)
+    distance = bottomJ - topJ
+    if bottomI > topI:
+        left = bottomI - distance // 2
+        if left <= topI:
+            return distance
+        if distance % 2 == 1 and bottomJ % 2 == 1:
+            left = left - 1
+        return distance + left - topI
+    else:
+        left = bottomI + distance // 2
+        if left >= topI:
+            return distance
+        if distance % 2 == 1 and bottomJ % 2 == 0:
+            left = left + 1
+        return distance - left + topI
+
+
 def bfsShortestPath(gameData, startNode):
     # 使用广度优先搜索算法找到从起点到所有出口的最短路径
     shortestPaths = nx.shortest_path(
@@ -488,6 +515,22 @@ def bfsShortestPath(gameData, startNode):
     shortest_exit = min(shortestPaths, key=lambda x: len(shortestPaths[x]))
 
     return shortestPaths[shortest_exit]
+
+
+def bfsShortestPathToTarget(gameData, startNode, endNode):
+    # 使用广度优先搜索算法找到从起点到所有出口的最短路径
+    shortestPaths = nx.shortest_path(
+        createGraphFromGamedata(gameData), source=startNode
+    )
+    shortestPaths = {
+        key: value for key, value in shortestPaths.items() if len(value) > 1
+    }
+    if len(shortestPaths) == 0:
+        return startNode
+    # 找到最短路径中最短的那条路径
+    shortest_exit = min(shortestPaths, key=lambda x: distanceBetweenIndex(x, endNode))
+
+    return shortestPaths[shortest_exit][1]
 
 
 def moveAllCat(gameData):
@@ -506,6 +549,30 @@ def moveAllCat(gameData):
                     cat["i"] = i
                     cat["j"] = j
                     if path[1] in exitList:
+                        cat["status"] = -1
+                    else:
+                        map[i][j]["status"] = 3
+                else:
+                    cat["status"] = 1
+
+
+def moveAllCatToTarget(gameData, targetIndex):
+    map = gameData["map"]
+    catList = gameData["catList"]
+    for cat in catList:
+        if cat["status"] == 0:
+            catI = cat["i"]
+            catJ = cat["j"]
+            map[catI][catJ]["status"] = 0
+            catAlgorithm = cat["algorithm"]
+            if catAlgorithm == 1:
+                nowIndex = fromIJToIndex(catI, catJ)
+                nextIndex = bfsShortestPathToTarget(gameData, nowIndex, targetIndex)
+                if nowIndex != nextIndex:
+                    i, j = fromIndexToIJ(nextIndex)
+                    cat["i"] = i
+                    cat["j"] = j
+                    if nextIndex in exitList:
                         cat["status"] = -1
                     else:
                         map[i][j]["status"] = 3
@@ -638,14 +705,7 @@ def drawGameData(gameData, userImage):
     drawTop = drawTop + lineheight
     draw.text(
         (drawLeft, drawTop),
-        f"冰数字：与间隔一格的障碍物相连，在间隔的一格里建立临时冰墙",
-        fill="black",
-        font=font,
-    )
-    drawTop = drawTop + lineheight
-    draw.text(
-        (drawLeft, drawTop),
-        f"　　　　冰墙在两回合后融化（剩余：{inventory['frostWall']}）",
+        f"冰数字：与间隔一格的障碍物相连，在间隔的一格里建立冰墙（剩余：{inventory['frostWall']}）",
         fill="black",
         font=font,
     )
@@ -654,6 +714,14 @@ def drawGameData(gameData, userImage):
 
     # 保存图片
     image.save(f"{config.imageCacheDirectory}/game_image.png")
+
+
+def checkGameFinish(gameData):
+    catList = gameData["catList"]
+    for cat in catList:
+        if cat["status"] == 0:
+            return False
+    return True
 
 
 def aroundFromIJ(i, j):
@@ -710,12 +778,12 @@ def useRoadbreaker(index, userId):
     inventory = gameData["inventory"]
     if inventory["roadbreaker"] == 0:
         return False
-    inventory["roadbreaker"] = inventory["roadbreaker"] - 1
     positonIJ = fromIndexToIJ(index)
     i = positonIJ[0]
     j = positonIJ[1]
     if map[i][j]["status"] == 0:
         map[i][j]["status"] = 2
+        inventory["roadbreaker"] = inventory["roadbreaker"] - 1
         playerList.append(index)
         aroundList = aroundFromIJ(i, j)
         for around in aroundList:
@@ -735,6 +803,34 @@ def useRoadbreaker(index, userId):
         return True
     else:
         return False
+
+
+def useFelineLure(index, userId):
+    gameData = playerGameDataMap[userId]
+    map = gameData["map"]
+    catList = gameData["catList"]
+    inventory = gameData["inventory"]
+    if inventory["felineLure"] == 0:
+        return False
+    positonIJ = fromIndexToIJ(index)
+    i = positonIJ[0]
+    j = positonIJ[1]
+    if map[i][j]["status"] == 0:
+        aroundList = aroundFromIJ(i, j)
+        nearbyCat = False
+        for around in aroundList:
+            aroundI = around[0]
+            aroundJ = around[1]
+            for cat in catList:
+                if cat["status"] == 0:
+                    if cat["i"] == aroundI and cat["j"] == aroundJ:
+                        nearbyCat = True
+                        break
+            if nearbyCat:
+                moveAllCatToTarget(gameData, index)
+                inventory["felineLure"] = inventory["felineLure"] - 1
+                return True
+    return False
 
 
 def deleteFilesStartswith(directory, prefix):
@@ -774,10 +870,11 @@ async def userInGame(event: Event) -> bool:
 
 
 checkFontExits()
-downloadImageToDirectory(
-    "https://marketplace.canva.cn/PX2nY/MAA9p7PX2nY/4/tl/canva-user--MAA9p7PX2nY.png",
-    f"{config.imageCacheDirectory}/common_user.png",
-)
+if not os.path.exists(f"{config.imageCacheDirectory}/common_user.png"):
+    downloadImageToDirectory(
+        "https://marketplace.canva.cn/PX2nY/MAA9p7PX2nY/4/tl/canva-user--MAA9p7PX2nY.png",
+        f"{config.imageCacheDirectory}/common_user.png",
+    )
 deleteFilesStartswith(config.imageCacheDirectory, "in_game_")
 checkAndAddToCache()
 # 创建后台线程
@@ -867,10 +964,13 @@ async def handleGameNextStep(event: Event, state: T_State):
         drawGameData(
             playerGameDataMap[userId], f"{config.imageCacheDirectory}/common_user.png"
         )
-        if result:
-            await surroundStep.finish("下子完成")
+        if checkGameFinish(playerGameDataMap[userId]):
+            await surroundTheCat.finish("游戏结束")
         else:
-            await surroundStep.finish("无效位置")
+            if result:
+                await surroundStep.finish("下子完成")
+            else:
+                await surroundStep.finish("无效位置")
     await surroundStep.finish("不在游戏中")
 
 
@@ -887,11 +987,35 @@ async def handleUseRoadbreaker(event: Event, state: T_State):
         drawGameData(
             playerGameDataMap[userId], f"{config.imageCacheDirectory}/common_user.png"
         )
-        if result:
-            await roadbreakerMatcher.finish("使用炸弹成功")
+        if checkGameFinish(playerGameDataMap[userId]):
+            await roadbreakerMatcher.finish("游戏结束")
         else:
-            await roadbreakerMatcher.finish("炸弹不足或无效位置")
+            if result:
+                await roadbreakerMatcher.finish("使用炸弹成功")
+            else:
+                await roadbreakerMatcher.finish("炸弹不足或无效位置")
     await roadbreakerMatcher.finish("不在游戏中")
+
+
+@felineLureMatcher.handle()
+async def handleUseFelineLure(event: Event, state: T_State):
+    message = event.get_plaintext()
+    message = message.replace("诱", "", 1)
+    placingPiecesNumber = textToNumber(message)
+    userId = event.get_user_id()
+    if 1 <= placingPiecesNumber <= 81 and userId in playerGameDataMap:
+        result = useFelineLure(placingPiecesNumber, userId)
+        drawGameData(
+            playerGameDataMap[userId], f"{config.imageCacheDirectory}/common_user.png"
+        )
+        if checkGameFinish(playerGameDataMap[userId]):
+            await felineLureMatcher.finish("游戏结束")
+        else:
+            if result:
+                await felineLureMatcher.finish("已放置猫条吸引猫咪")
+            else:
+                await felineLureMatcher.finish("猫条不足或无效位置")
+    await felineLureMatcher.finish("不在游戏中")
 
 
 # @surroundTheCat.handle()
